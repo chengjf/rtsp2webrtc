@@ -1,0 +1,15 @@
+[server]
+bind_addr = "0.0.0.0:3000"
+
+[[streams]]
+id = "camera-1"
+name = "Front Door"
+url = "rtsp://admin:abc303306@192.168.211.8:554/cam/realmonitor?channel=1&subtype=1"
+
+[limits]
+max_peers = 50
+max_per_stream = 20
+
+# [tls]
+# cert = "/path/to/cert.pem"
+# key = "/path/to/key.pem"
