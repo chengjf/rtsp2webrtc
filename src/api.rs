@@ -63,6 +63,7 @@ pub struct CreateStreamResponse {
 pub fn routes() -> Router<ApiState> {
     Router::new()
         .route("/health", get(health))
+        .route("/metrics", get(metrics))
         .route("/api/streams", get(list_streams))
         .route("/api/streams", axum::routing::post(create_stream))
         .route("/api/streams/{id}", get(stream_detail))
@@ -215,6 +216,34 @@ pub async fn delete_stream(
         Ok(()) => Ok(StatusCode::NO_CONTENT),
         Err(e) => Err((StatusCode::NOT_FOUND, e)),
     }
+}
+
+/// GET /metrics — Prometheus text format.
+pub async fn metrics(State(state): State<ApiState>) -> String {
+    let active = state.stream_manager.list_streams().await;
+    let peers = state.stream_manager.total_peers();
+    let connected = active.iter().filter(|s| s.connected).count();
+    let uptime = state.start_time.elapsed().as_secs();
+
+    format!(
+        "# HELP rtsp2webrtc_uptime_seconds Gateway uptime\n\
+         # TYPE rtsp2webrtc_uptime_seconds gauge\n\
+         rtsp2webrtc_uptime_seconds {uptime}\n\
+         # HELP rtsp2webrtc_active_streams Active RTSP streams\n\
+         # TYPE rtsp2webrtc_active_streams gauge\n\
+         rtsp2webrtc_active_streams {connected}\n\
+         # HELP rtsp2webrtc_total_peers Total WebRTC peers\n\
+         # TYPE rtsp2webrtc_total_peers gauge\n\
+         rtsp2webrtc_total_peers {peers}\n\
+         # HELP rtsp2webrtc_configured_streams Configured streams\n\
+         # TYPE rtsp2webrtc_configured_streams gauge\n\
+         rtsp2webrtc_configured_streams {}\n\
+         # HELP rtsp2webrtc_dynamic_streams Dynamic streams\n\
+         # TYPE rtsp2webrtc_dynamic_streams gauge\n\
+         rtsp2webrtc_dynamic_streams {}\n",
+        state.config.streams.len(),
+        active.iter().filter(|s| s.dynamic).count(),
+    )
 }
 
 /// If api_key is configured, validate the Authorization header.
