@@ -32,6 +32,8 @@ struct AppState {
 struct WsParams {
     #[serde(default)]
     stream: Option<String>,
+    #[serde(default)]
+    key: Option<String>,
 }
 
 #[tokio::main]
@@ -73,6 +75,7 @@ async fn main() -> AppResult<()> {
         stream_manager: Arc::clone(&stream_manager),
         config: config.clone(),
         start_time,
+        last_create: Arc::new(std::sync::Mutex::new(std::time::Instant::now())),
     };
 
     // ── CORS ──
@@ -152,6 +155,16 @@ async fn ws_handler(
     let stream_id = params
         .stream
         .unwrap_or_else(|| state.config.default_stream_id().to_string());
+
+    // Auth check (if api_key is configured)
+    if !state.config.server.api_key.is_empty() {
+        if params.key.as_deref() != Some(&state.config.server.api_key) {
+            return axum::response::Response::builder()
+                .status(401)
+                .body("invalid API key".into())
+                .unwrap();
+        }
+    }
 
     // Determine if this is a configured or dynamic stream
     let is_dynamic = state.config.find_stream(&stream_id).is_none();

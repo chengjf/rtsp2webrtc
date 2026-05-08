@@ -162,29 +162,45 @@ impl RtspPuller {
             pps,
         };
 
-        // Step 4: Spawn RTP relay task with reconnect logic
+        // Step 4: Spawn RTP relay task with reconnect logic + keepalive
         let reconnect_url = rtsp_url.to_string();
         let handle = tokio::spawn(async move {
             use futures_util::StreamExt;
 
             let mut backoff_ms = 1000;
             const MAX_BACKOFF_MS: u64 = 30_000;
+            const KEEPALIVE_SECS: u64 = 55; // camera timeout is 60s
 
             let mut current = playing;
 
             loop {
-                while let Some(item) = current.next().await {
-                    match item {
-                        Ok(PacketItem::Rtp(packet)) => {
+                loop {
+                    // Wrap each recv() with a keepalive timeout.
+                    // If no RTP packet arrives within KEEPALIVE_SECS,
+                    // the RTSP session may have timed out → reconnect.
+                    match tokio::time::timeout(
+                        std::time::Duration::from_secs(KEEPALIVE_SECS),
+                        current.next(),
+                    )
+                    .await
+                    {
+                        Ok(Some(Ok(PacketItem::Rtp(packet)))) => {
                             relay.relay(RtpPacket {
                                 data: Bytes::copy_from_slice(packet.raw()),
                             });
                         }
-                        Ok(PacketItem::Rtcp(_)) => {}
-                        Ok(_) => {}
-                        Err(e) => {
+                        Ok(Some(Err(e))) => {
                             error!("RTSP stream error: {e}");
-                            break; // break inner loop to reconnect
+                            break;
+                        }
+                        Ok(Some(_)) => {} // Rtcp or unknown
+                        Ok(None) => {
+                            info!("RTSP stream ended normally");
+                            break;
+                        }
+                        Err(_elapsed) => {
+                            warn!("RTSP keepalive timeout ({KEEPALIVE_SECS}s), reconnecting");
+                            break;
                         }
                     }
                 }

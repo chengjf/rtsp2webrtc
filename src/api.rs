@@ -1,12 +1,13 @@
 use crate::config::Config;
 use crate::stream::StreamManager;
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::{Json, Router};
 use axum::routing::get;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Instant;
 
 #[derive(Clone)]
@@ -14,6 +15,7 @@ pub struct ApiState {
     pub stream_manager: Arc<StreamManager>,
     pub config: Config,
     pub start_time: Instant,
+    pub last_create: Arc<Mutex<Instant>>,
 }
 
 // ── Request types ──
@@ -161,8 +163,26 @@ pub async fn stream_detail(
 /// POST /api/streams — Create a dynamic stream from an RTSP URL.
 pub async fn create_stream(
     State(state): State<ApiState>,
+    headers: HeaderMap,
     Json(req): Json<CreateStreamRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
+    check_auth(&state.config.server.api_key, &headers)?;
+
+    // Rate limiting
+    let rate_limit = state.config.limits.create_per_min;
+    if rate_limit > 0 {
+        let mut last = state.last_create.lock().unwrap();
+        let min_interval = std::time::Duration::from_secs(60) / rate_limit;
+        let elapsed = last.elapsed();
+        if elapsed < min_interval {
+            return Err((
+                StatusCode::TOO_MANY_REQUESTS,
+                format!("rate limit: {rate_limit}/min, retry in {}s", (min_interval - elapsed).as_secs() + 1),
+            ));
+        }
+        *last = Instant::now();
+    }
+
     if req.url.is_empty() || !req.url.starts_with("rtsp://") {
         return Err((StatusCode::BAD_REQUEST, "invalid RTSP URL".into()));
     }
@@ -172,18 +192,18 @@ pub async fn create_stream(
             StatusCode::CREATED,
             Json(CreateStreamResponse { stream_id }),
         )),
-        Err(e) => {
-            Err((StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")))
-        }
+        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, format!("{e}"))),
     }
 }
 
 /// DELETE /api/streams/:id — Stop a dynamic stream.
 pub async fn delete_stream(
     State(state): State<ApiState>,
+    headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    // Only allow deleting dynamic streams, not configured ones
+    check_auth(&state.config.server.api_key, &headers)?;
+
     if state.config.find_stream(&id).is_some() {
         return Err((
             StatusCode::FORBIDDEN,
@@ -195,6 +215,22 @@ pub async fn delete_stream(
         Ok(()) => Ok(StatusCode::NO_CONTENT),
         Err(e) => Err((StatusCode::NOT_FOUND, e)),
     }
+}
+
+/// If api_key is configured, validate the Authorization header.
+fn check_auth(api_key: &str, headers: &HeaderMap) -> Result<(), (StatusCode, String)> {
+    if api_key.is_empty() {
+        return Ok(());
+    }
+    let auth = headers
+        .get("Authorization")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let expected = format!("Bearer {api_key}");
+    if auth != expected {
+        return Err((StatusCode::UNAUTHORIZED, "invalid API key".into()));
+    }
+    Ok(())
 }
 
 fn mask_url(url: &str) -> String {

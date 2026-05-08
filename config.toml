@@ -1,5 +1,6 @@
 [server]
 bind_addr = "0.0.0.0:3000"
+# api_key = "changeme"  # uncomment to enable authentication
 
 [[streams]]
 id = "camera-1"
@@ -9,6 +10,7 @@ url = "rtsp://admin:abc303306@192.168.211.8:554/cam/realmonitor?channel=1&subtyp
 [limits]
 max_peers = 50
 max_per_stream = 20
+create_per_min = 10
 
 [cors]
 # Allowed origins. Leave empty for restrictive (same-origin).

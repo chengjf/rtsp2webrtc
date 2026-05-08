@@ -19,6 +19,10 @@ pub struct Config {
 pub struct ServerConfig {
     #[serde(default = "default_bind")]
     pub bind_addr: SocketAddr,
+    /// Optional API key. When set, all mutating endpoints and WebSocket
+    /// connections require `Authorization: Bearer <key>` or `?key=<key>`.
+    #[serde(default)]
+    pub api_key: String,
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -35,6 +39,9 @@ pub struct LimitsConfig {
     pub max_peers: usize,
     #[serde(default = "default_max_per_stream")]
     pub max_per_stream: usize,
+    /// Max stream-create requests per minute (0 = unlimited).
+    #[serde(default)]
+    pub create_per_min: u32,
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -81,6 +88,7 @@ impl Default for LimitsConfig {
         Self {
             max_peers: default_max_peers(),
             max_per_stream: default_max_per_stream(),
+            create_per_min: 0,
         }
     }
 }
