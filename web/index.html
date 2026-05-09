@@ -64,6 +64,9 @@ let pc, ws, currentStreamId;
 // ── ICE candidate queue (populated before remote desc is set) ──
 let pendingCandidates = [];
 let remoteDescReady = false;
+let pendingLocalCandidates = [];
+let localAnswerSent = false;
+let localIceWaiters = [];
 
 // ── Serialized message processing ──
 // WebSocket onmessage is async; without a queue, concurrent fires can cause
@@ -79,6 +82,107 @@ function wsBase() {
 }
 
 function t() { return new Date().toLocaleTimeString(); }
+function hasIceCredentials(sdp) {
+  return /(^|\r\n|\n)a=ice-ufrag:/.test(sdp) && /(^|\r\n|\n)a=ice-pwd:/.test(sdp);
+}
+
+function notifyLocalIceProgress() {
+  const waiters = localIceWaiters;
+  localIceWaiters = [];
+  for (const resolve of waiters) resolve();
+}
+
+function waitForNextLocalIceProgress(timeoutMs = 250) {
+  return new Promise(resolve => {
+    let finished = false;
+    const done = () => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      const idx = localIceWaiters.indexOf(done);
+      if (idx >= 0) localIceWaiters.splice(idx, 1);
+      resolve();
+    };
+    const timer = setTimeout(done, timeoutMs);
+    localIceWaiters.push(done);
+  });
+}
+
+function resetLocalIceState() {
+  pendingLocalCandidates = [];
+  localAnswerSent = false;
+  localIceWaiters = [];
+}
+
+function localCandidateMessage(candidate) {
+  return {
+    type: 'ice_candidate',
+    candidate: candidate.candidate,
+    sdpMid: candidate.sdpMid,
+    sdpMLineIndex: candidate.sdpMLineIndex ?? 0,
+  };
+}
+
+function flushPendingLocalCandidates() {
+  if (!localAnswerSent || !ws || ws.readyState !== WebSocket.OPEN) return;
+  for (const candidate of pendingLocalCandidates) {
+    ws.send(JSON.stringify(candidate));
+  }
+  if (pendingLocalCandidates.length) {
+    log(`本地 ICE candidates 已发送 (${pendingLocalCandidates.length})`, 'log-dim');
+  }
+  pendingLocalCandidates = [];
+}
+
+async function waitForLocalDescriptionWithIce(pc, timeoutMs = 4000) {
+  const started = Date.now();
+  let latest = pc.localDescription?.sdp || '';
+
+  while (Date.now() - started < timeoutMs) {
+    latest = pc.localDescription?.sdp || latest;
+    if (latest && hasIceCredentials(latest)) return latest;
+    if (pc.iceGatheringState === 'complete' && latest) return latest;
+    await waitForNextLocalIceProgress(250);
+  }
+
+  return pc.localDescription?.sdp || latest;
+}
+
+async function buildAnswerSdpWithIce(pc) {
+  // Path 1: browser-managed answer generation.
+  await pc.setLocalDescription();
+  let sdp = await waitForLocalDescriptionWithIce(pc);
+  if (hasIceCredentials(sdp)) return sdp;
+
+  // Path 2: explicit createAnswer fallback for engines that don't populate
+  // localDescription from implicit setLocalDescription fast enough.
+  if (pc.signalingState === 'have-remote-offer') {
+    log('Answer 缺少 ICE 凭据，尝试显式 createAnswer 回退', 'log-dim');
+    try {
+      const explicitAnswer = await pc.createAnswer();
+      await pc.setLocalDescription(explicitAnswer);
+      sdp = await waitForLocalDescriptionWithIce(pc);
+      if (hasIceCredentials(sdp)) return sdp;
+    } catch (e) {
+      log('显式 createAnswer 回退失败: ' + e, 'log-err');
+    }
+  }
+
+  // Path 3: ask browser to restart ICE and re-read localDescription.
+  if (typeof pc.restartIce === 'function') {
+    log('Answer 仍缺少 ICE 凭据，尝试 restartIce()', 'log-dim');
+    try {
+      pc.restartIce();
+      await waitForNextLocalIceProgress(500);
+      sdp = await waitForLocalDescriptionWithIce(pc, 2000);
+    } catch (e) {
+      log('restartIce 失败: ' + e, 'log-err');
+    }
+  }
+
+  return sdp;
+}
+
 function log(msg, cls) {
   const el = document.getElementById('log');
   el.textContent += t() + '  ' + msg + '\n';
@@ -124,6 +228,7 @@ async function handleMessage(data) {
     case 'connected':
       remoteDescReady = false;
       pendingCandidates = [];
+      resetLocalIceState();
       pc = new RTCPeerConnection({
         iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
       });
@@ -132,15 +237,22 @@ async function handleMessage(data) {
         document.getElementById('video').srcObject = e.streams[0];
       };
       pc.onicecandidate = (e) => {
-        if (e.candidate && ws && ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({
-            type: 'ice_candidate',
-            candidate: e.candidate.candidate,
-            sdpMid: e.candidate.sdpMid,
-            // Firefox ignores candidates without sdpMLineIndex when sdpMid is also absent
-            sdpMLineIndex: e.candidate.sdpMLineIndex ?? 0,
-          }));
+        notifyLocalIceProgress();
+        if (e.candidate) {
+          const message = localCandidateMessage(e.candidate);
+          if (localAnswerSent && ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify(message));
+          } else {
+            pendingLocalCandidates.push(message);
+          }
+        } else {
+          log('本地 ICE gathering 完成', 'log-dim');
         }
+      };
+      pc.onicegatheringstatechange = () => {
+        log('本地 ICE gathering: ' + pc.iceGatheringState, 'log-dim');
+        notifyLocalIceProgress();
+        if (localAnswerSent) flushPendingLocalCandidates();
       };
       pc.onconnectionstatechange = () => {
         log('连接状态: ' + pc.connectionState,
@@ -153,12 +265,25 @@ async function handleMessage(data) {
       break;
 
     case 'sdp_offer':
-      log('收到 SDP offer，设置远端描述…', 'log-ok');
+      log(
+        `收到 SDP offer，设置远端描述… (ice-ufrag=${/(^|\r\n|\n)a=ice-ufrag:/.test(msg.sdp)}, ice-pwd=${/(^|\r\n|\n)a=ice-pwd:/.test(msg.sdp)})`,
+        'log-ok'
+      );
       await pc.setRemoteDescription({ type: 'offer', sdp: msg.sdp });
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-      ws.send(JSON.stringify({ type: 'sdp_answer', sdp: answer.sdp }));
-      log('Answer 已发送', 'log-dim');
+      const localSdp = await buildAnswerSdpWithIce(pc);
+      const hasIceUfrag = /(^|\r\n|\n)a=ice-ufrag:/.test(localSdp);
+      const hasIcePwd = /(^|\r\n|\n)a=ice-pwd:/.test(localSdp);
+      localAnswerSent = true;
+      ws.send(JSON.stringify({ type: 'sdp_answer', sdp: localSdp }));
+      flushPendingLocalCandidates();
+      if (!hasIceUfrag || !hasIcePwd) {
+        const compact = (localSdp || '').slice(0, 600).replace(/\r\n|\n/g, ' | ');
+        log(`Answer SDP 片段(前600): ${compact}`, 'log-err');
+      }
+      log(
+        `Answer 已发送 (ice-ufrag=${hasIceUfrag}, ice-pwd=${hasIcePwd}, iceGathering=${pc.iceGatheringState}, signaling=${pc.signalingState}, localType=${pc.localDescription?.type || 'null'})`,
+        hasIceUfrag && hasIcePwd ? 'log-dim' : 'log-err'
+      );
 
       // Remote desc is now in place — flush any queued ICE candidates
       remoteDescReady = true;
@@ -225,6 +350,7 @@ function disconnect() {
   if (ws) { ws.close(); ws = null; }
   remoteDescReady = false;
   pendingCandidates = [];
+  resetLocalIceState();
   document.getElementById('video').srcObject = null;
   log('已断开', 'log-dim');
 }

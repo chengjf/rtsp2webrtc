@@ -22,16 +22,23 @@ pub struct H264CodecInfo {
 impl H264CodecInfo {
     /// Build the `a=fmtp:<pt>` line value for an H264 WebRTC SDP.
     ///
-    /// Format: `profile-level-id=XXXXXX;packetization-mode=1;sprop-parameter-sets=...,...`
+    /// Format: `level-asymmetry-allowed=1;profile-level-id=XXXXXX;packetization-mode=1;sprop-parameter-sets=...,...`
     pub fn fmtp_line(&self) -> String {
         let profile_level_id = if self.sps.len() >= 4 {
-            // SPS[0] is the NAL header (0x67); profile-level-id is in bytes 1..4
-            format!(
-                "{:02x}{:02x}{:02x}",
-                self.sps[1], self.sps[2], self.sps[3]
-            )
+            // Use a broadly compatible advertised profile for negotiation.
+            // Some Firefox builds reject offers that advertise camera-native
+            // Main/High profiles directly and answer with m=video 0/inactive.
+            // We keep packetization-mode=1 and sprop-parameter-sets unchanged.
+            let profile_idc = self.sps[1];
+            match profile_idc {
+                // Baseline / Constrained Baseline can be advertised directly.
+                0x42 => format!("{:02x}{:02x}{:02x}", self.sps[1], self.sps[2], self.sps[3]),
+                // For Main/High (and others), advertise constrained baseline for
+                // better browser interoperability.
+                _ => "42e01f".to_string(),
+            }
         } else {
-            // Fallback: baseline profile level 3.1
+            // Fallback: constrained baseline profile level 3.1
             "42e01f".to_string()
         };
 
@@ -44,7 +51,7 @@ impl H264CodecInfo {
         );
 
         format!(
-            "profile-level-id={profile_level_id};packetization-mode=1;sprop-parameter-sets={sprop}"
+            "level-asymmetry-allowed=1;profile-level-id={profile_level_id};packetization-mode=1;sprop-parameter-sets={sprop}"
         )
     }
 }

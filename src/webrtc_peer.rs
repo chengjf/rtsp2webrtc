@@ -2,6 +2,7 @@ use crate::error::AppResult;
 use crate::rtp_relay::RtpRelay;
 use crate::rtsp::H264CodecInfo;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
@@ -11,12 +12,41 @@ use webrtc_util::Unmarshal;
 use webrtc::api::APIBuilder;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidate;
 use webrtc::peer_connection::configuration::RTCConfiguration;
+use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::rtp_transceiver::RTCPFeedback;
 use webrtc::rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType};
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_local::TrackLocal;
+
+fn sdp_has_ice_credentials(sdp: &str) -> bool {
+    sdp.contains("a=ice-ufrag:") && sdp.contains("a=ice-pwd:")
+}
+
+async fn wait_for_local_description_with_ice(
+    pc: &RTCPeerConnection,
+    timeout: Duration,
+) -> Option<RTCSessionDescription> {
+    let started = Instant::now();
+    let mut latest = pc.local_description().await;
+
+    loop {
+        if latest
+            .as_ref()
+            .is_some_and(|desc| sdp_has_ice_credentials(&desc.sdp))
+        {
+            return latest;
+        }
+
+        if started.elapsed() >= timeout {
+            return latest;
+        }
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        latest = pc.local_description().await.or(latest);
+    }
+}
 
 /// Messages flowing from the signaling channel into the WebRTC peer.
 #[derive(Debug)]
@@ -159,9 +189,17 @@ impl WebRtcPeer {
         // ── Create offer AFTER callbacks are in place ─────────────────────────
         // Create SDP offer — the server has the media track and initiates
         let offer = pc.create_offer(None).await?;
-        pc.set_local_description(offer.clone()).await?;
-        info!("SDP offer created, sending to browser");
-        let _ = event_tx.send(PeerEvent::LocalDescription(offer));
+        let offer_fallback = offer.clone();
+        pc.set_local_description(offer).await?;
+        let local_offer = wait_for_local_description_with_ice(pc.as_ref(), Duration::from_millis(500))
+            .await
+            .unwrap_or(offer_fallback);
+        let offer_has_ufrag = local_offer.sdp.contains("a=ice-ufrag:");
+        let offer_has_pwd = local_offer.sdp.contains("a=ice-pwd:");
+        info!(
+            "SDP offer created, sending to browser (ice-ufrag={offer_has_ufrag}, ice-pwd={offer_has_pwd})"
+        );
+        let _ = event_tx.send(PeerEvent::LocalDescription(local_offer));
 
 
         // Clones for the spawned task
