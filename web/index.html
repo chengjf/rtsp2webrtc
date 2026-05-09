@@ -4,6 +4,13 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>RTSP2WebRTC</title>
+<!--
+  adapter.js normalises WebRTC API differences across Chrome / Edge / Firefox / Safari.
+  It is maintained by Google's WebRTC team and is the industry-standard shim.
+  See: https://github.com/webrtc/adapter
+-->
+<script src="https://webrtc.github.io/adapter/adapter-latest.js"
+        onerror="console.warn('adapter.js failed to load – browser differences may surface')"></script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: system-ui; background: #111; color: #eee; padding: 20px; }
@@ -129,7 +136,9 @@ async function handleMessage(data) {
           ws.send(JSON.stringify({
             type: 'ice_candidate',
             candidate: e.candidate.candidate,
-            sdpMid: e.candidate.sdpMid
+            sdpMid: e.candidate.sdpMid,
+            // Firefox ignores candidates without sdpMLineIndex when sdpMid is also absent
+            sdpMLineIndex: e.candidate.sdpMLineIndex ?? 0,
           }));
         }
       };
@@ -154,7 +163,7 @@ async function handleMessage(data) {
       // Remote desc is now in place — flush any queued ICE candidates
       remoteDescReady = true;
       for (const c of pendingCandidates) {
-        try { await pc.addIceCandidate(c); }
+        try { await pc.addIceCandidate(new RTCIceCandidate(c)); }
         catch (e) { log('addIceCandidate(queued) 失败: ' + e, 'log-err'); }
       }
       pendingCandidates = [];
@@ -164,12 +173,15 @@ async function handleMessage(data) {
       // Build a proper RTCIceCandidateInit from whatever shape the server sends
       const init = msg.candidate && typeof msg.candidate === 'object'
         ? msg.candidate                                      // already an object
-        : { candidate: msg.candidate, sdpMid: msg.sdpMid }; // flat fields
+        : { candidate: msg.candidate, sdpMid: msg.sdpMid, sdpMLineIndex: msg.sdpMLineIndex ?? 0 };
 
       if (!init?.candidate) break;
 
+      // Firefox requires sdpMLineIndex to be a number (not null/undefined)
+      if (init.sdpMLineIndex == null) init.sdpMLineIndex = 0;
+
       if (remoteDescReady) {
-        try { await pc.addIceCandidate(init); }
+        try { await pc.addIceCandidate(new RTCIceCandidate(init)); }
         catch (e) { log('addIceCandidate 失败: ' + e, 'log-err'); }
       } else {
         // Remote description not set yet — queue for later

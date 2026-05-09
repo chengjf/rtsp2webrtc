@@ -23,6 +23,9 @@ pub enum ClientMessage {
         candidate: String,
         #[serde(rename = "sdpMid")]
         sdp_mid: Option<String>,
+        /// Firefox requires sdpMLineIndex; Chrome/Edge send it too.
+        #[serde(rename = "sdpMLineIndex")]
+        sdp_mline_index: Option<u16>,
     },
 }
 
@@ -174,10 +177,12 @@ pub async fn handle_signaling(
                         ClientMessage::IceCandidate {
                             candidate,
                             sdp_mid,
+                            sdp_mline_index,
                         } => {
                             let candidate_json = serde_json::json!({
                                 "candidate": candidate,
                                 "sdpMid": sdp_mid.unwrap_or_default(),
+                                "sdpMLineIndex": sdp_mline_index.unwrap_or(0),
                             });
                             peer.send_command(PeerCommand::AddIceCandidate(
                                 candidate_json.to_string(),

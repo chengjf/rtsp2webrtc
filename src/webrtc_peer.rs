@@ -13,6 +13,7 @@ use webrtc::ice_transport::ice_candidate::RTCIceCandidate;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
+use webrtc::rtp_transceiver::RTCPFeedback;
 use webrtc::rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType};
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_local::TrackLocal;
@@ -54,7 +55,15 @@ impl WebRtcPeer {
         let fmtp_line = codec_info.fmtp_line();
         info!("H264 codec fmtp: {fmtp_line}");
 
-        // Register the H264 codec in the media engine
+        // Register the H264 codec in the media engine.
+        // Include standard RTCP feedback entries so that Firefox and Chrome
+        // both see the a=rtcp-fb lines they expect in the SDP offer.
+        let rtcp_feedback = vec![
+            RTCPFeedback { typ: "nack".to_string(),     parameter: "".to_string()   },
+            RTCPFeedback { typ: "nack".to_string(),     parameter: "pli".to_string() },
+            RTCPFeedback { typ: "ccm".to_string(),      parameter: "fir".to_string() },
+            RTCPFeedback { typ: "goog-remb".to_string(), parameter: "".to_string()  },
+        ];
         let mut media = MediaEngine::default();
         media.register_codec(
             RTCRtpCodecParameters {
@@ -63,7 +72,7 @@ impl WebRtcPeer {
                     clock_rate: 90000,
                     channels: 0,
                     sdp_fmtp_line: fmtp_line.clone(),
-                    rtcp_feedback: vec![],
+                    rtcp_feedback: rtcp_feedback.clone(),
                 },
                 payload_type: codec_info.payload_type,
                 ..Default::default()
@@ -81,7 +90,7 @@ impl WebRtcPeer {
                 clock_rate: 90000,
                 channels: 0,
                 sdp_fmtp_line: fmtp_line,
-                rtcp_feedback: vec![],
+                rtcp_feedback: rtcp_feedback,
             },
             "video".to_string(),
             "camera".to_string(),
@@ -98,13 +107,62 @@ impl WebRtcPeer {
             while let Ok((_, _)) = rtp_sender.read(&mut rtcp_buf).await {}
         });
 
+        let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<PeerCommand>();
+
+        // ── Register callbacks BEFORE set_local_description ──────────────────
+        // ICE gathering is triggered by set_local_description; if callbacks are
+        // registered after that call, early candidates are silently dropped.
+        // This matters most on loopback (localhost) where Round-Trip Time ≈ 0 ms.
+
+        // ICE candidate → forward to signaling
+        let event_tx_ice = event_tx.clone();
+        pc.on_ice_candidate(Box::new(
+            move |candidate: Option<RTCIceCandidate>| {
+                if let Some(c) = candidate {
+                    if let Ok(init) = c.to_json() {
+                        debug!("Local ICE candidate: {:?}", init.candidate);
+                        if let Ok(json) = serde_json::to_value(&init) {
+                            let _ = event_tx_ice.send(PeerEvent::IceCandidate(json));
+                        }
+                    }
+                }
+                Box::pin(async {})
+            },
+        ));
+
+        // Peer connection state → forward to signaling
+        let event_tx_conn = event_tx.clone();
+        pc.on_peer_connection_state_change(Box::new(
+            move |state: RTCPeerConnectionState| {
+                info!("WebRTC state: {state}");
+                match state {
+                    RTCPeerConnectionState::Connected => {
+                        info!("WebRTC peer connection established");
+                        let _ = event_tx_conn.send(PeerEvent::ConnectionEstablished);
+                    }
+                    RTCPeerConnectionState::Failed => {
+                        error!("WebRTC peer connection failed");
+                        let _ = event_tx_conn.send(PeerEvent::ConnectionFailed);
+                    }
+                    _ => {}
+                }
+                Box::pin(async {})
+            },
+        ));
+
+        // ICE connection state (diagnostic only)
+        pc.on_ice_connection_state_change(Box::new(move |state| {
+            info!("ICE state: {state}");
+            Box::pin(async {})
+        }));
+
+        // ── Create offer AFTER callbacks are in place ─────────────────────────
         // Create SDP offer — the server has the media track and initiates
         let offer = pc.create_offer(None).await?;
         pc.set_local_description(offer.clone()).await?;
         info!("SDP offer created, sending to browser");
         let _ = event_tx.send(PeerEvent::LocalDescription(offer));
 
-        let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<PeerCommand>();
 
         // Clones for the spawned task
         let pc_task = Arc::clone(&pc);
@@ -174,38 +232,6 @@ impl WebRtcPeer {
             }
         });
 
-        // Register ICE candidate callback (sync, no .await)
-        let event_tx_ice = event_tx.clone();
-        pc.on_ice_candidate(Box::new(
-            move |candidate: Option<RTCIceCandidate>| {
-                if let Some(c) = candidate {
-                    if let Ok(init) = c.to_json() {
-                        if let Ok(json) = serde_json::to_value(init) {
-                            let _ = event_tx_ice.send(PeerEvent::IceCandidate(json));
-                        }
-                    }
-                }
-                Box::pin(async {})
-            },
-        ));
-
-        // Register connection state change callback (sync, no .await)
-        pc.on_peer_connection_state_change(Box::new(
-            move |state: RTCPeerConnectionState| {
-                match state {
-                    RTCPeerConnectionState::Connected => {
-                        info!("WebRTC peer connection established");
-                        let _ = event_tx.send(PeerEvent::ConnectionEstablished);
-                    }
-                    RTCPeerConnectionState::Failed => {
-                        error!("WebRTC peer connection failed");
-                        let _ = event_tx.send(PeerEvent::ConnectionFailed);
-                    }
-                    _ => {}
-                }
-                Box::pin(async {})
-            },
-        ));
 
         Ok(Self {
             cmd_tx,

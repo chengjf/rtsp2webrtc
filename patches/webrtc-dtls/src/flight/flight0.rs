@@ -111,7 +111,28 @@ impl Flight for Flight0 {
                                 Some(Error::ErrNoSupportedEllipticCurves),
                             ));
                         }
-                        state.named_curve = e.elliptic_curves[0];
+                        // Pick the first curve that we actually support.
+                        // Chrome 116+ puts the post-quantum hybrid curve
+                        // X25519KYBER768Draft00 (0x6399) at the front of its list;
+                        // that value maps to NamedCurve::Unsupported and
+                        // generate_keypair() would return ErrInvalidNamedCurve.
+                        // We must skip any unknown/unsupported entries and use the
+                        // first mutually-supported curve instead.
+                        use crate::curve::named_curve::NamedCurve;
+                        let chosen = e.elliptic_curves.iter().copied()
+                            .find(|&c| !matches!(c, NamedCurve::Unsupported));
+                        match chosen {
+                            Some(c) => state.named_curve = c,
+                            None => {
+                                return Err((
+                                    Some(Alert {
+                                        alert_level: AlertLevel::Fatal,
+                                        alert_description: AlertDescription::InsufficientSecurity,
+                                    }),
+                                    Some(Error::ErrNoSupportedEllipticCurves),
+                                ));
+                            }
+                        }
                     }
                     Extension::UseSrtp(e) => {
                         if let Ok(profile) = find_matching_srtp_profile(
