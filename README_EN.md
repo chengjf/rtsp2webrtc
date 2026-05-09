@@ -106,11 +106,20 @@ RUST_LOG=info cargo run --release
 
 ### 3. Open Browser
 
-Open `web/index.html`, verify the gateway URL is `http://localhost:3000`, then click "Create & Play" or click "Play" on any listed stream.
+- **Debug page**: Open `web/debugging/index.html` — full-featured (stream list, log panel), ideal for development & debugging
+- **Demo page**: Open `web/demo/demo.html` — minimal example showing the simplest integration
+
+Verify the gateway URL is `http://localhost:3000`, enter an RTSP URL, and click "Play".
 
 ---
 
 ## Usage
+
+### Via Demo Page
+
+Open `web/demo/demo.html`, enter an RTSP URL, and click Play.
+
+### Via API
 
 Client submits an RTSP URL; the server spins up the relay on demand:
 
@@ -269,6 +278,27 @@ RTSP Camera ──→ RtspPuller ──→ RtpRelay (broadcast) ──┬──�
 | `tls.key` | path | — | TLS private key path |
 
 ---
+
+## Frontend Integration
+
+The player is an ES module with zero DOM dependencies — embeddable in any frontend project:
+
+```js
+import { RtspWebRTCPlayer } from './rtsp-webrtc-player.js';
+
+const player = new RtspWebRTCPlayer({
+  gateway: 'http://localhost:3000',
+  videoElement: document.querySelector('video'),
+});
+player.onStateChange = (s) => console.log('state:', s);
+
+await player.createAndPlay('rtsp://admin:pass@192.168.1.100:554/stream');
+// Or play an existing stream: await player.play('uuid-from-api');
+
+player.stop();
+```
+
+The player file is at `web/demo/rtsp-webrtc-player.js` — copy it into your project. The host page must load [adapter.js](https://github.com/webrtc/adapter) (WebRTC browser normalization shim).
 
 ## Roadmap
 

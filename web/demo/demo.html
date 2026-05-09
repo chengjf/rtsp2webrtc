@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RTSP2WebRTC Demo</title>
+<script src="https://webrtc.github.io/adapter/adapter-latest.js"
+        onerror="console.warn('adapter.js failed to load')"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui; background: #111; color: #eee; padding: 20px; }
+  .panel { max-width: 640px; margin: 0 auto; }
+  h2 { margin: 16px 0 8px; font-size: 16px; color: #888; }
+  .row { display: flex; gap: 8px; align-items: center; margin: 8px 0; }
+  input { flex: 1; padding: 8px 12px; border: 1px solid #444; border-radius: 6px; background: #222; color: #eee; font-size: 14px; }
+  button { padding: 8px 20px; border: none; border-radius: 6px; font-size: 14px; cursor: pointer; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn-play { background: #4caf50; color: white; }
+  .btn-stop { background: #f44336; color: white; }
+  video { width: 100%; background: #000; border-radius: 8px; margin-top: 12px; }
+  #status { margin-top: 8px; font-size: 13px; color: #888; }
+</style>
+</head>
+<body>
+<div class="panel">
+
+  <h2>RTSP → WebRTC Player Demo</h2>
+
+  <div class="row">
+    <input id="gateway" value="http://localhost:3000" placeholder="Gateway URL" style="max-width:280px">
+  </div>
+
+  <div class="row">
+    <input id="rtspUrl" placeholder="rtsp://admin:password@192.168.1.1:554/stream">
+    <button class="btn-play" id="btnPlay" onclick="doPlay()">Play</button>
+    <button class="btn-stop" id="btnStop" onclick="doStop()" disabled>Stop</button>
+  </div>
+
+  <video id="video" autoplay playsinline muted></video>
+  <div id="status">Ready</div>
+
+</div>
+
+<script type="module">
+import { RtspWebRTCPlayer } from './rtsp-webrtc-player.js';
+
+const el = {
+  gateway: document.getElementById('gateway'),
+  rtspUrl: document.getElementById('rtspUrl'),
+  btnPlay: document.getElementById('btnPlay'),
+  btnStop: document.getElementById('btnStop'),
+  video: document.getElementById('video'),
+  status: document.getElementById('status'),
+};
+
+let player = null;
+
+function setUI(playing) {
+  el.btnPlay.disabled = playing;
+  el.btnStop.disabled = !playing;
+}
+
+window.doPlay = async () => {
+  const url = el.rtspUrl.value.trim();
+  if (!url) return;
+
+  if (player) player.stop();
+
+  player = new RtspWebRTCPlayer({
+    gateway: el.gateway.value.replace(/\/$/, ''),
+    videoElement: el.video,
+  });
+
+  player.onStateChange = (s) => {
+    el.status.textContent = s;
+    setUI(s === 'connecting' || s === 'connected');
+  };
+  player.onError = (e) => { el.status.textContent = 'Error: ' + e.message; };
+
+  setUI(true);
+  try {
+    await player.createAndPlay(url);
+  } catch (e) {
+    el.status.textContent = 'Error: ' + e.message;
+    setUI(false);
+  }
+};
+
+window.doStop = () => {
+  if (player) { player.stop(); player = null; }
+  el.video.srcObject = null;
+  setUI(false);
+  el.status.textContent = 'Stopped';
+};
+</script>
+</body>
+</html>
