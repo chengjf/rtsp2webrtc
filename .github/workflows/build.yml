@@ -2,10 +2,7 @@ name: Build Linux x86_64
 
 on:
   push:
-    branches: [ master ]
     tags: [ 'v*' ]
-  pull_request:
-    branches: [ master ]
 
 env:
   CARGO_TERM_COLOR: always
