@@ -1,6 +1,8 @@
 mod api;
 mod config;
 mod error;
+mod ffmpeg_puller;
+mod live;
 mod rtp_relay;
 mod rtsp;
 mod signaling;
@@ -92,6 +94,8 @@ async fn main() -> AppResult<()> {
             .allow_headers(tower_http::cors::Any)
     };
 
+    let live_manager = Arc::new(live::LiveManager::new());
+
     let app = Router::new()
         .route("/ws", get(ws_handler))
         .with_state(AppState {
@@ -100,6 +104,11 @@ async fn main() -> AppResult<()> {
             start_time,
         })
         .merge(api::routes().with_state(api_state))
+        .merge(
+            Router::new()
+                .route("/live", get(live::handler))
+                .with_state(live_manager),
+        )
         .layer(TraceLayer::new_for_http())
         .layer(cors);
 

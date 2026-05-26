@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Document</title>
+    <!--
+        Jessibuca: hardware-accelerated H.264/H.265 player via WebCodecs/WASM.
+        CDN source: https://github.com/langhuihui/jessibuca (v3 branch)
+        For offline/intranet environments, download dist.zip from https://jessibuca.com/dist.zip
+        and place jessibuca.js / decoder.js / decoder.wasm alongside this file,
+        then change the src below to "jessibuca.js" and decoder to "decoder.js".
+    -->
+    <script src="https://cdn.jsdelivr.net/gh/langhuihui/jessibuca@v3/dist/jessibuca.js"></script>
+</head>
+<body>
+    <div id="player" style="width:1220px;height:700px;background:#000;"></div>
+<script>
+    var urlParams = new URLSearchParams(window.location.search);
+    var ip = urlParams.get('ip');
+
+    // 从 URL 参数读取密码，例如 ?ip=x.x.x.x&password=yourpass
+    var password = urlParams.get('password') || '';
+
+    // 拼接最终播放地址
+    var url = 'ws://127.0.0.1:3000/live?url=rtsp://admin:' + password + '@' + ip + ':554/Streaming/Channels/2';
+    console.log(url);
+
+    var player = new Jessibuca({
+        container: document.getElementById('player'),
+        decoder: 'decoder.js',  // must be same-origin; served from same dir as this page
+        isFlv: true,        // WebSocket URL 无 .flv 后缀时必须显式声明 FLV 协议
+        useMSE: true,       // MediaSource 硬件解码（H.264，Chrome/Edge）
+        videoBuffer: 0.2,   // 200ms buffer，低延迟直播
+        isResize: true,     // 等比缩放填充容器
+        hasAudio: false,    // 无音频流
+        timeout: 10,        // 连接超时（秒）
+        heartTimeout: 30,   // 无数据超时（秒）
+        debug: true,        // 开发调试阶段保留，稳定后改 false
+    });
+
+    player.play(url);
+</script>
+</body>
+</html>

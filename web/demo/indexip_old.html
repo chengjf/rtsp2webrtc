@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Document</title>
+    <script src="flv.min.js"></script>
+</head>
+<body>
+
+    <video id="videoElement" muted style="width:1220px;height:700px;"></video>
+<script>
+    if (flvjs.isSupported()) {
+        var urlParams = new URLSearchParams(window.location.search);
+        var ip = urlParams.get('ip');
+
+        // 从 URL 参数读取密码，例如 ?ip=x.x.x.x&password=yourpass
+        var password = urlParams.get('password') || '';
+
+        // 拼接最终播放地址
+        var url = 'ws://127.0.0.1:3000/live?url=rtsp://admin:' + password + '@' + ip + ':554/Streaming/Channels/2';
+        console.log(url);
+
+        var videoElement = document.getElementById('videoElement');
+        var flvPlayer = flvjs.createPlayer({
+            type: 'flv',
+            url: url
+        });
+        flvPlayer.attachMediaElement(videoElement);
+        flvPlayer.load();
+        flvPlayer.play();
+    }
+</script>
+
+</body>
+</html>

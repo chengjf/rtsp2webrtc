@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Document</title>
+    <!--
+        mpegts.js: H.265 hardware decode via WebCodecs (Chrome 107+ / Edge).
+        npm: https://www.npmjs.com/package/mpegts.js
+        For offline environments: curl -L -o mpegts.js https://cdn.jsdelivr.net/npm/mpegts.js/dist/mpegts.js
+    -->
+    <script src="https://cdn.jsdelivr.net/npm/mpegts.js/dist/mpegts.js"></script>
+</head>
+<body>
+    <div id="info" style="font-family:monospace;font-size:12px;color:#aaa;padding:4px 8px;background:#111;"></div>
+    <video id="player" muted autoplay playsinline style="width:1220px;height:700px;background:#000;"></video>
+<script>
+    var urlParams = new URLSearchParams(window.location.search);
+    var ip = urlParams.get('ip');
+
+    // 从 URL 参数读取密码，例如 ?ip=x.x.x.x&password=yourpass
+    var password = urlParams.get('password') || '';
+
+    // 拼接最终播放地址（MPEG-TS 模式，H.265 直通，无服务端转码）
+    var url = 'ws://127.0.0.1:3000/live?url=rtsp://admin:' + password + '@' + ip + ':554/Streaming/Channels/2&mpegts=true';
+    console.log(url);
+
+    // ── 能力检测（调试用，稳定后可删除）──
+    var info = document.getElementById('info');
+    var ua = navigator.userAgent;
+    var chromeVer = (ua.match(/Chrome\/([\d]+)/) || [])[1] || '?';
+    var hasWCS = 'VideoDecoder' in window;
+    var features = mpegts.getFeatureList ? JSON.stringify(mpegts.getFeatureList()) : 'N/A';
+    info.textContent = 'Chrome: ' + chromeVer + '  |  WebCodecs: ' + hasWCS + '  |  mpegts features: ' + features;
+    console.log('UserAgent:', ua);
+    console.log('Chrome version:', chromeVer, '(≥107 needed for H.265 WebCodecs)');
+    console.log('WebCodecs available:', hasWCS);
+    console.log('mpegts.js features:', features);
+
+    if (mpegts.isSupported()) {
+        var player = mpegts.createPlayer(
+            {
+                type: 'mpegts',
+                url: url,
+                isLive: true,
+            },
+            {
+                enableWorker: true,
+                liveBufferLatencyChasing: true,      // 追帧，保持低延迟
+                liveBufferLatencyMaxLatency: 1.5,    // 超过 1.5s 开始追帧
+                liveBufferLatencyMinRemain: 0.3,     // 追到 0.3s 停止
+            }
+        );
+        var videoElement = document.getElementById('player');
+        player.attachMediaElement(videoElement);
+        player.load();
+        player.play();
+    } else {
+        console.error('mpegts.js is not supported in this browser');
+    }
+</script>
+</body>
+</html>

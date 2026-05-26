@@ -44,8 +44,4 @@ impl RtpRelay {
         }
     }
 
-    /// Number of active subscribers.
-    pub fn subscriber_count(&self) -> usize {
-        self.tx.receiver_count()
-    }
 }

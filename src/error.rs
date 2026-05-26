@@ -22,6 +22,10 @@ pub enum AppError {
 
     #[error("{0}")]
     Other(String),
+
+    /// Sentinel: RTSP stream is H.265 — caller should switch to FFmpeg transcoding.
+    #[error("H.265 stream detected — FFmpeg transcoding required")]
+    H265Required,
 }
 
 impl From<webrtc::error::Error> for AppError {

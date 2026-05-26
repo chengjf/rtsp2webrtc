@@ -1,4 +1,5 @@
 use crate::error::{AppError, AppResult};
+use crate::ffmpeg_puller::FfmpegPuller;
 use crate::rtp_relay::RtpRelay;
 use crate::rtsp::{H264CodecInfo, RtspPuller};
 use serde::Serialize;
@@ -12,13 +13,20 @@ use uuid::Uuid;
 
 pub type StreamId = String;
 
+/// Discriminates between a native retina puller (H.264) and an
+/// FFmpeg transcoding puller (H.265 → H.264).
+enum ActivePuller {
+    Retina(RtspPuller),
+    Ffmpeg(FfmpegPuller),
+}
+
 /// Holds all runtime objects for an active RTSP stream.
 struct ActiveStream {
     url: String,
     relay: Arc<RtpRelay>,
     codec_info: H264CodecInfo,
     subscriber_count: usize,
-    puller: Option<RtspPuller>,
+    puller: Option<ActivePuller>,
     idle_timer: Option<JoinHandle<()>>,
 }
 
@@ -113,10 +121,45 @@ impl StreamManager {
         info!("Dynamic stream {sid}: starting RTSP pull for {rtsp_url}");
 
         let relay_for_pull = Arc::clone(&relay);
-        let puller = RtspPuller::start(rtsp_url, relay_for_pull).await?;
-        let codec_info = puller.codec_info.clone();
+        let (puller, codec_info) =
+            match RtspPuller::start(rtsp_url, Arc::clone(&relay_for_pull)).await {
+                Ok(p) => {
+                    let ci = p.codec_info.clone();
+                    (ActivePuller::Retina(p), ci)
+                }
+                Err(AppError::H265Required) => {
+                    info!("Dynamic stream {sid}: H.265 detected, switching to FFmpeg transcoding");
+                    let p = FfmpegPuller::start(rtsp_url, relay_for_pull).await?;
+                    let ci = p.codec_info.clone();
+                    (ActivePuller::Ffmpeg(p), ci)
+                }
+                Err(e) => return Err(e),
+            };
 
+        // Verify actual RTP data is flowing within 5 seconds.
+        // RTSP DESCRIBE/SETUP/PLAY can succeed even with wrong credentials on many cameras;
+        // waiting for a real packet is the only reliable liveness check.
+        let mut probe = relay.subscribe();
+        match tokio::time::timeout(std::time::Duration::from_secs(5), probe.recv()).await {
+            Ok(Ok(_)) => {} // got a packet — stream is alive
+            Ok(Err(e)) => return Err(AppError::Rtsp(format!("RTP relay error: {e}"))),
+            Err(_) => {
+                return Err(AppError::Rtsp(
+                    "no RTP data received within 5s — check credentials or stream URL".into(),
+                ));
+            }
+        }
+
+        // Re-check under write lock: another concurrent request may have already
+        // created a stream for the same URL while we were starting the puller.
         let mut streams = self.streams.write().await;
+        if let Some((existing_id, _)) = streams.iter().find(|(_, s)| s.url == rtsp_url) {
+            let existing_id = existing_id.clone();
+            info!("Stream {existing_id}: lost creation race, reusing existing pull");
+            // `puller` drops here — its Drop impl aborts the redundant task
+            return Ok(existing_id);
+        }
+
         streams.insert(
             sid.clone(),
             ActiveStream {

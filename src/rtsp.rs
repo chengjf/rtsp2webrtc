@@ -1,13 +1,38 @@
 use crate::error::{AppError, AppResult};
 use crate::rtp_relay::{RtpPacket, RtpRelay};
 use bytes::Bytes;
-use retina::client::{PlayOptions, Playing, Session, SessionOptions, SetupOptions};
+use retina::client::{Credentials, PlayOptions, Playing, Session, SessionOptions, SetupOptions};
 use retina::codec::{ParametersRef, VideoParametersCodec};
 use retina::client::PacketItem;
 use std::sync::Arc;
 use tokio::task::JoinHandle;
 use tracing::{error, info, warn};
 use url::Url;
+
+/// Probe an RTSP URL via DESCRIBE and return true if the video track is H.265/HEVC.
+/// Returns false on any error (safe fallback: treat as H.264).
+pub async fn probe_is_h265(rtsp_url: &str) -> bool {
+    let Ok(mut url) = Url::parse(rtsp_url) else { return false };
+
+    let user = url.username().to_string();
+    let pass = url.password().unwrap_or("").to_string();
+    let has_creds = !user.is_empty();
+
+    let mut options = SessionOptions::default();
+    if has_creds {
+        url.set_username("").ok();
+        url.set_password(None).ok();
+        options = options.creds(Some(Credentials { username: user, password: pass }));
+    }
+
+    match Session::describe(url, options).await {
+        Ok(session) => session.streams().iter().any(|s| {
+            let enc = s.encoding_name().to_lowercase();
+            enc == "h265" || enc == "hevc"
+        }),
+        Err(_) => false,
+    }
+}
 
 /// Extracted H264 codec info needed for WebRTC SDP negotiation.
 #[derive(Clone, Debug)]
@@ -117,6 +142,12 @@ impl RtspPuller {
         let video_stream = &session.streams()[video_idx];
         let payload_type = video_stream.rtp_payload_type();
         let encoding = video_stream.encoding_name().to_string();
+
+        // H.265 / HEVC cannot be decoded by Chrome/Firefox in WebRTC.
+        // Signal the caller to fall back to FFmpeg transcoding.
+        if encoding.eq_ignore_ascii_case("h265") || encoding.eq_ignore_ascii_case("hevc") {
+            return Err(AppError::H265Required);
+        }
 
         // Extract SPS/PPS (cloned into owned Vec<u8> so we drop the borrow)
         let (sps, pps) = match video_stream.parameters() {
@@ -242,10 +273,6 @@ impl RtspPuller {
         })
     }
 
-    /// Abort the RTSP pull task.
-    pub fn stop(&mut self) {
-        self.handle.abort();
-    }
 }
 
 impl Drop for RtspPuller {
