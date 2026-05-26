@@ -18,6 +18,11 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - name: Install musl tools
+        run: sudo apt-get install -y musl-tools
 
       - name: Cache cargo registry & build
         uses: actions/cache@v4
@@ -26,17 +31,17 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-musl-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-
+            ${{ runner.os }}-cargo-musl-
 
-      - name: Build release binary
-        run: cargo build --release --locked
+      - name: Build release binary (musl static)
+        run: cargo build --release --locked --target x86_64-unknown-linux-musl
 
       - name: Package artifact
         run: |
           mkdir -p dist
-          cp target/release/rtsp2webRTC dist/
+          cp target/x86_64-unknown-linux-musl/release/rtsp2webRTC dist/
           cp -r web dist/
           cp config.toml dist/
           tar -czf rtsp2webrtc-linux-x86_64.tar.gz -C dist .
