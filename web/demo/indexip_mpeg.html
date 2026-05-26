@@ -22,7 +22,9 @@
     var password = urlParams.get('password') || '';
 
     // 拼接最终播放地址（MPEG-TS 模式，H.265 直通，无服务端转码）
-    var url = 'ws://127.0.0.1:3000/live?url=rtsp://admin:' + password + '@' + ip + ':554/Streaming/Channels/2&mpegts=true';
+    // 自动适配当前页面的 host，兼容 HTTP/HTTPS
+    var wsBase = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host;
+    var url = wsBase + '/live?url=rtsp://admin:' + password + '@' + ip + ':554/Streaming/Channels/2&mpegts=true';
     console.log(url);
 
     // ── 能力检测（调试用，稳定后可删除）──

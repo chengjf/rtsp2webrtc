@@ -22,8 +22,9 @@
     // 从 URL 参数读取密码，例如 ?ip=x.x.x.x&password=yourpass
     var password = urlParams.get('password') || '';
 
-    // 拼接最终播放地址
-    var url = 'ws://127.0.0.1:3000/live?url=rtsp://admin:' + password + '@' + ip + ':554/Streaming/Channels/2';
+    // 拼接最终播放地址（自动适配当前页面的 host，兼容 HTTP/HTTPS）
+    var wsBase = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host;
+    var url = wsBase + '/live?url=rtsp://admin:' + password + '@' + ip + ':554/Streaming/Channels/2';
     console.log(url);
 
     var player = new Jessibuca({
